@@ -1,8 +1,8 @@
 terraform {
   required_providers {
     digitalocean = {
-      source  = "digitalocean/digitalocean"
-      version = "~> 1.22.1"
+      source = "digitalocean/digitalocean"
+      version = "~> 2.0"
     }
   }
 }
