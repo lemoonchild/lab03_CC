@@ -36,6 +36,7 @@ RUN apt-get update && apt-get install -y \
     fontconfig \
     fonts-dejavu-core \
     software-properties-common \
+    openssh-client \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 RUN add-apt-repository ppa:deadsnakes/ppa
@@ -65,6 +66,9 @@ COPY requirements.txt .
 # Not production-intended, never do this, this is just a simple example
 RUN pip install -r requirements.txt --break-system-packages 
 
+# Create .ssh directory
+RUN mkdir -p /root/.ssh && chmod 700 /root/.ssh
+
 # Set user
 ARG USER=appuser
 ARG UID=1001
@@ -75,6 +79,6 @@ RUN adduser \
     --no-create-home \
     --uid "${UID}" \
     "${USER}"
-USER ${UID}
+#USER ${UID}
 
 WORKDIR /program

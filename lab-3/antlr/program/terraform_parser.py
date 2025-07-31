@@ -7,6 +7,10 @@ from antlr4 import *
 from TerraformSubsetLexer import TerraformSubsetLexer
 from TerraformSubsetParser import TerraformSubsetParser
 from TerraformSubsetListener import TerraformSubsetListener
+import subprocess 
+import base64
+import hashlib
+import socket
 
 class TerraformApplyListener(TerraformSubsetListener):
   def __init__(self):
@@ -60,6 +64,32 @@ class TerraformApplyListener(TerraformSubsetListener):
       else:
         raise Exception(f"Undefined variable '{var_name}' used in provider block.")
     return self.provider_token_expr.strip('"')
+
+def ensure_ssh_key(api_token, pubkey_path, key_name="do-droplet-key"):
+    # fingerprint
+    pub = open(pubkey_path).read().strip()
+    key_body = pub.split()[1].encode()
+    fp_b64 = base64.b64encode(hashlib.sha256(key_body).digest()).decode().rstrip("=")
+    fingerprint = f"SHA256:{fp_b64}"
+
+    headers = {"Content-Type": "application/json",
+               "Authorization": f"Bearer {api_token}"}
+    # search
+    resp = requests.get("https://api.digitalocean.com/v2/account/keys",
+                        headers=headers,
+                        params={"fingerprint": fingerprint})
+    resp.raise_for_status()
+    keys = resp.json().get("ssh_keys", [])
+    if keys:
+        return keys[0]["id"]
+
+    # create if not exists
+    payload = {"name": key_name, "public_key": pub}
+    resp = requests.post("https://api.digitalocean.com/v2/account/keys",
+                         headers=headers,
+                         json=payload)
+    resp.raise_for_status()
+    return resp.json()["ssh_key"]["id"]
 
 def create_state_file(droplet_name, droplet_id, droplet_ip):
   """Create or update terraform.tfstate file with droplet information"""
@@ -129,7 +159,31 @@ def delete_state_file():
     os.remove("terraform.tfstate")
     print("[+] State file removed: terraform.tfstate")
 
+def wait_for_ssh(droplet_ip, port=22, timeout=180, interval=5):
+    """
+    Wait until the SSH port (22) of the VM responds.
+    - timeout: maximum seconds to wait
+    - interval: seconds between each attempt
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            with socket.create_connection((droplet_ip, port), timeout=3):
+                print(f"[*] SSH port {port} open on {droplet_ip}")
+                return True
+        except Exception:
+            print(f"[*] Port {port} closed in {droplet_ip}, retrying in {interval}s…")
+            time.sleep(interval)
+    raise TimeoutError(f"Timeout: port {port} did not respond in {timeout}s")
+
 def create_droplet(api_token, config):
+  # Read SSH key from file
+  ssh_keys = []
+
+  if "ssh_key_path" in config:
+      key_id = ensure_ssh_key(api_token, config["ssh_key_path"])
+      ssh_keys.append(key_id)
+
   url = "https://api.digitalocean.com/v2/droplets"
   headers = {
     "Content-Type": "application/json",
@@ -141,7 +195,7 @@ def create_droplet(api_token, config):
     "region": config["region"],
     "size": config["size"],
     "image": config["image"],
-    "ssh_keys": [],
+    "ssh_keys": ssh_keys,
     "backups": False,
     "ipv6": False,
     "user_data": None,
@@ -167,8 +221,34 @@ def create_droplet(api_token, config):
       droplet_ip = public_ips[0]
       # Create state file with droplet information
       create_state_file(config["name"], droplet_id, droplet_ip)
+
+      if "ssh_key_path" in config:
+        # 1) Wait for SSH port to be open
+        wait_for_ssh(droplet_ip, port=22, timeout=180, interval=5)
+        # 2) Connect and generate evidence
+        priv_key = config["ssh_key_path"].rstrip(".pub")
+        ssh_into_droplet(priv_key, droplet_ip)
       return droplet_id, droplet_ip
     time.sleep(5)
+
+def ssh_into_droplet(priv_key_path, droplet_ip, user="root"):
+  cmd = [
+      "ssh",
+      "-o", "StrictHostKeyChecking=no",
+      "-i", priv_key_path,
+      f"{user}@{droplet_ip}",
+      "echo 'SSH OK'; hostname; whoami"
+  ]
+
+  print(f"[*] Attempting to SSH into droplet at {droplet_ip} with key {priv_key_path}")
+  res = subprocess.run(cmd, capture_output=True, text=True)
+  output = res.stdout + res.stderr
+
+  print("[evidence] SSH output:\n" + output)
+
+  with open("evidence.txt", "w") as f:
+      f.write(f"SSH to {droplet_ip}:\n\n{output}\n")
+  print("[+] Evidence written to evidence.txt")
 
 def destroy_droplet(api_token):
   """Destroy a droplet using ID from state file"""

@@ -10,6 +10,7 @@ resource "digitalocean_droplet" "web" {
   name   = "example-droplet"
   region = "nyc1"
   size   = "s-1vcpu-512mb-10gb"
+  ssh_key_path = "/root/.ssh/do-droplet-key.pub"
 }
 
 # Remember to change to your PAT
@@ -17,5 +18,5 @@ variable "digitalocean_token" {
   description = "The DigitalOcean API token."
   type        = string
   sensitive   = true
-  default     = ""
+  default     = "YOUR_DO_API_KEY"
 }
